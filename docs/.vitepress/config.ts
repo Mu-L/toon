@@ -92,7 +92,7 @@ export default defineConfig({
 
     footer: {
       message: 'Released under the <a href="https://opensource.org/licenses/MIT" target="_blank">MIT License</a>.',
-      copyright: 'Copyright © 2025-PRESENT <a href="https://github.com/johannschopplich" target="_blank">Johann Schopplich</a>',
+      copyright: 'Copyright © 2025-PRESENT <a href="https://johannschopplich.com" target="_blank">Johann Schopplich</a>',
     },
 
     search: {
