@@ -67,7 +67,7 @@ export function formatHeader(
 
   let header = ''
 
-  if (key) {
+  if (key != null) {
     header += encodeKey(key)
   }
 

@@ -184,7 +184,7 @@ function* decodeKeyValueSync(
 ): Generator<JsonStreamEvent> {
   // Check for array header first
   const arrayHeader = parseArrayHeaderLine(content, DEFAULT_DELIMITER)
-  if (arrayHeader && arrayHeader.header.key) {
+  if (arrayHeader && arrayHeader.header.key !== undefined) {
     yield { type: 'key', key: arrayHeader.header.key }
     yield* decodeArrayFromHeaderSync(arrayHeader.header, arrayHeader.inlineValues, cursor, baseDepth, options)
     return
@@ -434,7 +434,7 @@ function* decodeListItemSync(
 
   // Check for tabular-first list-item object: `- key[N]{fields}:`
   const headerInfo = parseArrayHeaderLine(afterHyphen, DEFAULT_DELIMITER)
-  if (headerInfo && headerInfo.header.key && headerInfo.header.fields) {
+  if (headerInfo && headerInfo.header.key !== undefined && headerInfo.header.fields !== undefined) {
     // Object with tabular array as first field
     const header = headerInfo.header
     yield { type: 'startObject' }
@@ -590,7 +590,7 @@ async function* decodeKeyValueAsync(
 ): AsyncGenerator<JsonStreamEvent> {
   // Check for array header first
   const arrayHeader = parseArrayHeaderLine(content, DEFAULT_DELIMITER)
-  if (arrayHeader && arrayHeader.header.key) {
+  if (arrayHeader && arrayHeader.header.key !== undefined) {
     yield { type: 'key', key: arrayHeader.header.key }
     yield* decodeArrayFromHeaderAsync(arrayHeader.header, arrayHeader.inlineValues, cursor, baseDepth, options)
     return
@@ -820,7 +820,7 @@ async function* decodeListItemAsync(
 
   // Check for tabular-first list-item object: `- key[N]{fields}:`
   const headerInfo = parseArrayHeaderLine(afterHyphen, DEFAULT_DELIMITER)
-  if (headerInfo && headerInfo.header.key && headerInfo.header.fields) {
+  if (headerInfo && headerInfo.header.key !== undefined && headerInfo.header.fields !== undefined) {
     // Object with tabular array as first field
     const header = headerInfo.header
     yield { type: 'startObject' }

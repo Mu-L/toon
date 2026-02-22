@@ -54,6 +54,22 @@ describe('streaming decode', () => {
       ])
     })
 
+    it('decode inline array with empty string key', () => {
+      const input = '""[2]: 1,2'
+      const lines = input.split('\n')
+      const events = Array.from(decodeStreamSync(lines))
+
+      expect(events).toEqual([
+        { type: 'startObject' },
+        { type: 'key', key: '' },
+        { type: 'startArray', length: 2 },
+        { type: 'primitive', value: 1 },
+        { type: 'primitive', value: 2 },
+        { type: 'endArray' },
+        { type: 'endObject' },
+      ])
+    })
+
     it('decode list array', () => {
       const input = 'items[2]:\n  - Apple\n  - Banana'
       const lines = input.split('\n')
@@ -289,6 +305,23 @@ describe('streaming decode', () => {
           { name: 'Bob', age: 25, city: 'LA' },
           { name: 'Charlie', age: 35, city: 'SF' },
         ],
+      })
+    })
+
+    it('handle list item objects with empty string keyed tabular fields', () => {
+      const input = [
+        'items[1]:',
+        '  - ""[2]{a}:',
+        '      1',
+        '      2',
+      ].join('\n')
+
+      const fromLines = decodeFromLines(input.split('\n'))
+      const fromString = decode(input)
+
+      expect(fromLines).toEqual(fromString)
+      expect(fromLines).toEqual({
+        items: [{ '': [{ a: 1 }, { a: 2 }] }],
       })
     })
   })

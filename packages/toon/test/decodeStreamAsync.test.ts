@@ -54,6 +54,22 @@ describe('async streaming decode', () => {
       ])
     })
 
+    it('decodes inline array with empty string key', async () => {
+      const input = '""[2]: 1,2'
+      const lines = input.split('\n')
+      const events = await collect(decodeStream(asyncLines(lines)))
+
+      expect(events).toEqual([
+        { type: 'startObject' },
+        { type: 'key', key: '' },
+        { type: 'startArray', length: 2 },
+        { type: 'primitive', value: 1 },
+        { type: 'primitive', value: 2 },
+        { type: 'endArray' },
+        { type: 'endObject' },
+      ])
+    })
+
     it('decodes list array', async () => {
       const input = 'items[2]:\n  - Apple\n  - Banana'
       const lines = input.split('\n')
@@ -156,6 +172,16 @@ describe('async streaming decode', () => {
 
       expect(events).toBeDefined()
       expect(events[0]).toEqual({ type: 'startObject' })
+    })
+
+    it('decodes list item objects with empty string keyed tabular fields', async () => {
+      const input = 'items[1]:\n  - ""[2]{a}:\n      1\n      2'
+      const lines = input.split('\n')
+      const events = await collect(decodeStream(asyncLines(lines)))
+
+      await expect(buildValueFromEventsAsync(asyncEvents(events))).resolves.toEqual({
+        items: [{ '': [{ a: 1 }, { a: 2 }] }],
+      })
     })
   })
 
