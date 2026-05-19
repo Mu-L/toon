@@ -8,6 +8,7 @@ import { findClosingQuote, findUnquotedChar, unescapeString } from '../shared/st
 export function parseArrayHeaderLine(
   content: string,
   defaultDelimiter: Delimiter,
+  strict: boolean = false,
 ): { header: ArrayHeaderInfo, inlineValues?: string } | undefined {
   const trimmedToken = content.trimStart()
 
@@ -55,6 +56,8 @@ export function parseArrayHeaderLine(
     // Validate: no extraneous content between bracket end and brace start
     const gapBeforeBrace = content.slice(bracketEnd + 1, braceStart)
     if (gapBeforeBrace.trim() !== '') {
+      if (strict)
+        throw new SyntaxError(`Unexpected content "${gapBeforeBrace.trim()}" between bracket and fields segment`)
       return
     }
 
@@ -74,6 +77,8 @@ export function parseArrayHeaderLine(
   const gapStart = Math.max(bracketEnd + 1, braceEnd)
   const gapBeforeColon = content.slice(gapStart, colonIndex)
   if (gapBeforeColon.trim() !== '') {
+    if (strict)
+      throw new SyntaxError(`Unexpected content "${gapBeforeColon.trim()}" between bracket segment and colon`)
     return
   }
 
@@ -87,12 +92,13 @@ export function parseArrayHeaderLine(
   const afterColon = content.slice(colonIndex + 1).trim()
   const bracketContent = content.slice(bracketStart + 1, bracketEnd)
 
-  // Try to parse bracket segment
   let parsedBracket: ReturnType<typeof parseBracketSegment>
   try {
     parsedBracket = parseBracketSegment(bracketContent, defaultDelimiter)
   }
-  catch {
+  catch (error) {
+    if (strict)
+      throw error
     return
   }
 
@@ -104,6 +110,14 @@ export function parseArrayHeaderLine(
     const foundBraceEnd = content.indexOf(CLOSE_BRACE, braceStart)
     if (foundBraceEnd !== -1 && foundBraceEnd < colonIndex) {
       const fieldsContent = content.slice(braceStart + 1, foundBraceEnd)
+
+      const mismatchedDelimiter = findUnquotedMismatchedDelimiter(fieldsContent, delimiter)
+      if (mismatchedDelimiter !== undefined) {
+        if (strict)
+          throw new SyntaxError(`Header delimiter mismatch: bracket declares "${formatDelimiter(delimiter)}" but fields segment contains unquoted "${formatDelimiter(mismatchedDelimiter)}"`)
+        return
+      }
+
       fields = parseDelimitedValues(fieldsContent, delimiter).map(field => parseStringLiteral(field.trim()))
     }
   }
@@ -118,6 +132,8 @@ export function parseArrayHeaderLine(
     inlineValues: afterColon || undefined,
   }
 }
+
+const BRACKET_LENGTH_PATTERN = /^(?:0|[1-9]\d*)$/
 
 export function parseBracketSegment(
   seg: string,
@@ -136,12 +152,28 @@ export function parseBracketSegment(
     content = content.slice(0, -1)
   }
 
-  const length = Number.parseInt(content, 10)
-  if (Number.isNaN(length)) {
-    throw new TypeError(`Invalid array length: ${seg}`)
+  if (!BRACKET_LENGTH_PATTERN.test(content)) {
+    throw new SyntaxError(`Invalid array length: "${seg}" (expected non-negative integer with no leading zeros)`)
   }
 
-  return { length, delimiter }
+  return { length: Number.parseInt(content, 10), delimiter }
+}
+
+const DELIMITER_CANDIDATES: readonly Delimiter[] = [',', '\t', '|']
+
+function findUnquotedMismatchedDelimiter(content: string, activeDelimiter: Delimiter): Delimiter | undefined {
+  for (const candidate of DELIMITER_CANDIDATES) {
+    if (candidate === activeDelimiter)
+      continue
+    if (findUnquotedChar(content, candidate) !== -1)
+      return candidate
+  }
+}
+
+function formatDelimiter(delimiter: Delimiter): string {
+  if (delimiter === '\t')
+    return '\\t'
+  return delimiter
 }
 
 // #endregion

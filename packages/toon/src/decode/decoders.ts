@@ -140,9 +140,16 @@ export function* decodeStreamSync(
     return
   }
 
+  if (first.content.trim() === '[]') {
+    cursor.advanceSync()
+    yield { type: 'startArray', length: 0 }
+    yield { type: 'endArray' }
+    return
+  }
+
   // Check for root array
   if (isArrayHeaderContent(first.content)) {
-    const headerInfo = withLine(first, () => parseArrayHeaderLine(first.content, DEFAULT_DELIMITER))
+    const headerInfo = withLine(first, () => parseArrayHeaderLine(first.content, DEFAULT_DELIMITER, resolvedOptions.strict))
     if (headerInfo) {
       cursor.advanceSync()
       yield* decodeArrayFromHeaderSync(headerInfo.header, headerInfo.inlineValues, cursor, 0, resolvedOptions, first)
@@ -159,9 +166,17 @@ export function* decodeStreamSync(
     return
   }
 
+  if (!isKeyValueLineSync(first) && cursor.peekSync()?.depth === 0) {
+    throw new ToonDecodeError(
+      'Top-level document must start with a key-value or array-header line',
+      { line: first.lineNumber, source: first.raw },
+    )
+  }
+
   // Root object
+  const rootSeenKeys = resolvedOptions.strict ? new Set<string>() : undefined
   yield { type: 'startObject' }
-  yield* decodeKeyValueSync(first, cursor, 0, resolvedOptions)
+  yield* decodeKeyValueSync(first, cursor, 0, resolvedOptions, rootSeenKeys)
 
   // Process remaining object fields
   while (!cursor.atEndSync()) {
@@ -171,10 +186,22 @@ export function* decodeStreamSync(
     }
 
     cursor.advanceSync()
-    yield* decodeKeyValueSync(line, cursor, 0, resolvedOptions)
+    yield* decodeKeyValueSync(line, cursor, 0, resolvedOptions, rootSeenKeys)
   }
 
   yield { type: 'endObject' }
+}
+
+function assertNoDuplicateKey(key: string, line: ParsedLine, seenKeys: Set<string> | undefined): void {
+  if (!seenKeys)
+    return
+  if (seenKeys.has(key)) {
+    throw new ToonDecodeError(
+      `Duplicate sibling key "${key}"`,
+      { line: line.lineNumber, source: line.raw },
+    )
+  }
+  seenKeys.add(key)
 }
 
 function* decodeKeyValueSync(
@@ -182,12 +209,14 @@ function* decodeKeyValueSync(
   cursor: StreamingLineCursor,
   baseDepth: Depth,
   options: DecoderContext,
+  seenKeys?: Set<string>,
 ): Generator<JsonStreamEvent> {
   const content = line.content
 
   // Check for array header first
-  const arrayHeader = withLine(line, () => parseArrayHeaderLine(content, DEFAULT_DELIMITER))
+  const arrayHeader = withLine(line, () => parseArrayHeaderLine(content, DEFAULT_DELIMITER, options.strict))
   if (arrayHeader && arrayHeader.header.key !== undefined) {
+    assertNoDuplicateKey(arrayHeader.header.key, line, seenKeys)
     yield { type: 'key', key: arrayHeader.header.key }
     yield* decodeArrayFromHeaderSync(arrayHeader.header, arrayHeader.inlineValues, cursor, baseDepth, options, line)
     return
@@ -198,6 +227,7 @@ function* decodeKeyValueSync(
   const colonIndex = content.indexOf(COLON, key.length)
   const rest = colonIndex >= 0 ? content.slice(colonIndex + 1).trim() : ''
 
+  assertNoDuplicateKey(key, line, seenKeys)
   yield isQuoted ? { type: 'key', key, wasQuoted: true } : { type: 'key', key }
 
   // No value after colon - expect nested object or empty
@@ -216,6 +246,12 @@ function* decodeKeyValueSync(
     return
   }
 
+  if (rest === '[]') {
+    yield { type: 'startArray', length: 0 }
+    yield { type: 'endArray' }
+    return
+  }
+
   // Inline primitive value
   yield { type: 'primitive', value: withLine(line, () => parsePrimitiveToken(rest)) }
 }
@@ -226,6 +262,7 @@ function* decodeObjectFieldsSync(
   options: DecoderContext,
 ): Generator<JsonStreamEvent> {
   let computedDepth: Depth | undefined
+  const seenKeys = options.strict ? new Set<string>() : undefined
 
   while (!cursor.atEndSync()) {
     const line = cursor.peekSync()
@@ -239,7 +276,7 @@ function* decodeObjectFieldsSync(
 
     if (line.depth === computedDepth) {
       cursor.advanceSync()
-      yield* decodeKeyValueSync(line, cursor, computedDepth, options)
+      yield* decodeKeyValueSync(line, cursor, computedDepth, options, seenKeys)
     }
     else {
       break
@@ -438,11 +475,17 @@ function* decodeListItemSync(
     return
   }
 
+  if (afterHyphen.trim() === '[]') {
+    yield { type: 'startArray', length: 0 }
+    yield { type: 'endArray' }
+    return
+  }
+
   const itemLine: ParsedLine = { ...line, content: afterHyphen }
 
   // Check for array header after hyphen
   if (isArrayHeaderContent(afterHyphen)) {
-    const arrayHeader = withLine(itemLine, () => parseArrayHeaderLine(afterHyphen, DEFAULT_DELIMITER))
+    const arrayHeader = withLine(itemLine, () => parseArrayHeaderLine(afterHyphen, DEFAULT_DELIMITER, options.strict))
     if (arrayHeader) {
       yield* decodeArrayFromHeaderSync(arrayHeader.header, arrayHeader.inlineValues, cursor, baseDepth, options, itemLine)
       return
@@ -450,10 +493,11 @@ function* decodeListItemSync(
   }
 
   // Check for tabular-first list-item object: `- key[N]{fields}:`
-  const headerInfo = withLine(itemLine, () => parseArrayHeaderLine(afterHyphen, DEFAULT_DELIMITER))
+  const headerInfo = withLine(itemLine, () => parseArrayHeaderLine(afterHyphen, DEFAULT_DELIMITER, options.strict))
   if (headerInfo && headerInfo.header.key !== undefined && headerInfo.header.fields !== undefined) {
     // Object with tabular array as first field
     const header = headerInfo.header
+    const seenKeys = options.strict ? new Set<string>([header.key!]) : undefined
     yield { type: 'startObject' }
     yield { type: 'key', key: header.key! }
 
@@ -470,7 +514,7 @@ function* decodeListItemSync(
 
       if (nextLine.depth === followDepth && !nextLine.content.startsWith(LIST_ITEM_PREFIX)) {
         cursor.advanceSync()
-        yield* decodeKeyValueSync(nextLine, cursor, followDepth, options)
+        yield* decodeKeyValueSync(nextLine, cursor, followDepth, options, seenKeys)
       }
       else {
         break
@@ -483,8 +527,9 @@ function* decodeListItemSync(
 
   // Check for object first field after hyphen
   if (isKeyValueContent(afterHyphen)) {
+    const seenKeys = options.strict ? new Set<string>() : undefined
     yield { type: 'startObject' }
-    yield* decodeKeyValueSync(itemLine, cursor, baseDepth + 1, options)
+    yield* decodeKeyValueSync(itemLine, cursor, baseDepth + 1, options, seenKeys)
 
     // Read subsequent fields
     const followDepth = baseDepth + 1
@@ -496,7 +541,7 @@ function* decodeListItemSync(
 
       if (nextLine.depth === followDepth && !nextLine.content.startsWith(LIST_ITEM_PREFIX)) {
         cursor.advanceSync()
-        yield* decodeKeyValueSync(nextLine, cursor, followDepth, options)
+        yield* decodeKeyValueSync(nextLine, cursor, followDepth, options, seenKeys)
       }
       else {
         break
@@ -559,9 +604,16 @@ export async function* decodeStream(
       return
     }
 
+    if (first.content.trim() === '[]') {
+      await cursor.advance()
+      yield { type: 'startArray', length: 0 }
+      yield { type: 'endArray' }
+      return
+    }
+
     // Check for root array
     if (isArrayHeaderContent(first.content)) {
-      const headerInfo = withLine(first, () => parseArrayHeaderLine(first.content, DEFAULT_DELIMITER))
+      const headerInfo = withLine(first, () => parseArrayHeaderLine(first.content, DEFAULT_DELIMITER, resolvedOptions.strict))
       if (headerInfo) {
         await cursor.advance()
         yield* decodeArrayFromHeaderAsync(headerInfo.header, headerInfo.inlineValues, cursor, 0, resolvedOptions, first)
@@ -577,9 +629,17 @@ export async function* decodeStream(
       return
     }
 
+    if (!isKeyValueLineSync(first) && (await cursor.peek())?.depth === 0) {
+      throw new ToonDecodeError(
+        'Top-level document must start with a key-value or array-header line',
+        { line: first.lineNumber, source: first.raw },
+      )
+    }
+
     // Root object
+    const rootSeenKeys = resolvedOptions.strict ? new Set<string>() : undefined
     yield { type: 'startObject' }
-    yield* decodeKeyValueAsync(first, cursor, 0, resolvedOptions)
+    yield* decodeKeyValueAsync(first, cursor, 0, resolvedOptions, rootSeenKeys)
 
     // Process remaining object fields
     while (!(await cursor.atEnd())) {
@@ -588,7 +648,7 @@ export async function* decodeStream(
         break
       }
       await cursor.advance()
-      yield* decodeKeyValueAsync(line, cursor, 0, resolvedOptions)
+      yield* decodeKeyValueAsync(line, cursor, 0, resolvedOptions, rootSeenKeys)
     }
 
     yield { type: 'endObject' }
@@ -604,12 +664,14 @@ async function* decodeKeyValueAsync(
   cursor: StreamingLineCursor,
   baseDepth: Depth,
   options: DecoderContext,
+  seenKeys?: Set<string>,
 ): AsyncGenerator<JsonStreamEvent> {
   const content = line.content
 
   // Check for array header first
-  const arrayHeader = withLine(line, () => parseArrayHeaderLine(content, DEFAULT_DELIMITER))
+  const arrayHeader = withLine(line, () => parseArrayHeaderLine(content, DEFAULT_DELIMITER, options.strict))
   if (arrayHeader && arrayHeader.header.key !== undefined) {
+    assertNoDuplicateKey(arrayHeader.header.key, line, seenKeys)
     yield { type: 'key', key: arrayHeader.header.key }
     yield* decodeArrayFromHeaderAsync(arrayHeader.header, arrayHeader.inlineValues, cursor, baseDepth, options, line)
     return
@@ -620,6 +682,7 @@ async function* decodeKeyValueAsync(
   const colonIndex = content.indexOf(COLON, key.length)
   const rest = colonIndex >= 0 ? content.slice(colonIndex + 1).trim() : ''
 
+  assertNoDuplicateKey(key, line, seenKeys)
   yield isQuoted ? { type: 'key', key, wasQuoted: true } : { type: 'key', key }
 
   // No value after colon - expect nested object or empty
@@ -638,6 +701,12 @@ async function* decodeKeyValueAsync(
     return
   }
 
+  if (rest === '[]') {
+    yield { type: 'startArray', length: 0 }
+    yield { type: 'endArray' }
+    return
+  }
+
   // Inline primitive value
   yield { type: 'primitive', value: withLine(line, () => parsePrimitiveToken(rest)) }
 }
@@ -648,6 +717,7 @@ async function* decodeObjectFieldsAsync(
   options: DecoderContext,
 ): AsyncGenerator<JsonStreamEvent> {
   let computedDepth: Depth | undefined
+  const seenKeys = options.strict ? new Set<string>() : undefined
 
   while (!(await cursor.atEnd())) {
     const line = await cursor.peek()
@@ -661,7 +731,7 @@ async function* decodeObjectFieldsAsync(
 
     if (line.depth === computedDepth) {
       await cursor.advance()
-      yield* decodeKeyValueAsync(line, cursor, computedDepth, options)
+      yield* decodeKeyValueAsync(line, cursor, computedDepth, options, seenKeys)
     }
     else {
       break
@@ -839,11 +909,17 @@ async function* decodeListItemAsync(
     return
   }
 
+  if (afterHyphen.trim() === '[]') {
+    yield { type: 'startArray', length: 0 }
+    yield { type: 'endArray' }
+    return
+  }
+
   const itemLine: ParsedLine = { ...line, content: afterHyphen }
 
   // Check for array header after hyphen
   if (isArrayHeaderContent(afterHyphen)) {
-    const arrayHeader = withLine(itemLine, () => parseArrayHeaderLine(afterHyphen, DEFAULT_DELIMITER))
+    const arrayHeader = withLine(itemLine, () => parseArrayHeaderLine(afterHyphen, DEFAULT_DELIMITER, options.strict))
     if (arrayHeader) {
       yield* decodeArrayFromHeaderAsync(arrayHeader.header, arrayHeader.inlineValues, cursor, baseDepth, options, itemLine)
       return
@@ -851,10 +927,11 @@ async function* decodeListItemAsync(
   }
 
   // Check for tabular-first list-item object: `- key[N]{fields}:`
-  const headerInfo = withLine(itemLine, () => parseArrayHeaderLine(afterHyphen, DEFAULT_DELIMITER))
+  const headerInfo = withLine(itemLine, () => parseArrayHeaderLine(afterHyphen, DEFAULT_DELIMITER, options.strict))
   if (headerInfo && headerInfo.header.key !== undefined && headerInfo.header.fields !== undefined) {
     // Object with tabular array as first field
     const header = headerInfo.header
+    const seenKeys = options.strict ? new Set<string>([header.key!]) : undefined
     yield { type: 'startObject' }
     yield { type: 'key', key: header.key! }
 
@@ -871,7 +948,7 @@ async function* decodeListItemAsync(
 
       if (nextLine.depth === followDepth && !nextLine.content.startsWith(LIST_ITEM_PREFIX)) {
         await cursor.advance()
-        yield* decodeKeyValueAsync(nextLine, cursor, followDepth, options)
+        yield* decodeKeyValueAsync(nextLine, cursor, followDepth, options, seenKeys)
       }
       else {
         break
@@ -884,8 +961,9 @@ async function* decodeListItemAsync(
 
   // Check for object first field after hyphen
   if (isKeyValueContent(afterHyphen)) {
+    const seenKeys = options.strict ? new Set<string>() : undefined
     yield { type: 'startObject' }
-    yield* decodeKeyValueAsync(itemLine, cursor, baseDepth + 1, options)
+    yield* decodeKeyValueAsync(itemLine, cursor, baseDepth + 1, options, seenKeys)
 
     // Read subsequent fields
     const followDepth = baseDepth + 1
@@ -897,7 +975,7 @@ async function* decodeListItemAsync(
 
       if (nextLine.depth === followDepth && !nextLine.content.startsWith(LIST_ITEM_PREFIX)) {
         await cursor.advance()
-        yield* decodeKeyValueAsync(nextLine, cursor, followDepth, options)
+        yield* decodeKeyValueAsync(nextLine, cursor, followDepth, options, seenKeys)
       }
       else {
         break
