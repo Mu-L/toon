@@ -128,8 +128,8 @@ export function* encodeArrayLines(
   options: ResolvedEncodeOptions,
 ): Generator<string> {
   if (value.length === 0) {
-    const header = formatHeader(0, { key, delimiter: options.delimiter })
-    yield indentedLine(depth, header, options.indent)
+    const line = key != null ? `${encodeKey(key)}: []` : '[]'
+    yield indentedLine(depth, line, options.indent)
     return
   }
 
@@ -324,9 +324,8 @@ export function* encodeObjectAsListItemLines(
   }
   else if (isJsonArray(firstValue)) {
     if (firstValue.length === 0) {
-      // Empty array: `- key[0]:`
-      const header = formatHeader(0, { delimiter: options.delimiter })
-      yield indentedListItem(depth, `${encodedKey}${header}`, options.indent)
+      // Empty array: `- key: []`
+      yield indentedListItem(depth, `${encodedKey}: []`, options.indent)
     }
     else if (isArrayOfPrimitives(firstValue)) {
       // Inline primitive array: `- key[N]: values`

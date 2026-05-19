@@ -48,7 +48,7 @@ describe('JavaScript-specific type normalization', () => {
 
     it('converts empty Set to empty array', () => {
       const result = encode(new Set())
-      expect(result).toBe('[0]:')
+      expect(result).toBe('[]')
     })
   })
 
